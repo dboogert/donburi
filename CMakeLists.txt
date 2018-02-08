@@ -9,3 +9,5 @@ target_include_directories (donburi PUBLIC ${LIBUNWIND_ROOT}/include)
 target_link_libraries(donburi  ${LIBUNWIND_ROOT}/lib/libunwind.so ${LIBUNWIND_ROOT}/lib/libunwind-x86_64.so dl)
 
 add_executable(test_donburi test.cpp)
+
+add_subdirectory(tools)
