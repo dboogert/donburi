@@ -11,12 +11,10 @@
 #include <libunwind.h>
 #include <pthread.h>
 
-typedef void* (*fn_malloc)(size_t);
-typedef void* (*fn_free)(void*);
-
 struct Stack
 {
-    unw_word_t ip[16];
+	static const int maxStackDepth = 64;
+    unw_word_t ip[maxStackDepth];
     int f;
 
     void get()
@@ -28,7 +26,7 @@ struct Stack
         unw_cursor_t cursor;
         unw_init_local(&cursor, &context);
 
-        while( unw_step( &cursor ) && f < 16)
+        while( unw_step( &cursor ) && f < maxStackDepth)
         {
             unw_get_reg( &cursor, UNW_REG_IP, &ip[f] );
             f++;
@@ -58,6 +56,15 @@ struct Stack
             }    
         }    
     }
+
+	void write(int fd)
+	{
+		::write(fd, &f, sizeof(f) );
+		for (size_t i = 0; i < f; ++i)
+		{
+			::write(fd, &ip[i], sizeof(ip[i]));
+		}
+	}
 };
 
 struct MemOp
@@ -65,13 +72,59 @@ struct MemOp
     Stack stack;
     size_t size;
     void* ptr;
-    bool malloc;
+    bool allocation;
+
+	void write(int fd)
+	{
+		::write(fd, &size, sizeof(size) );
+		::write(fd, &ptr, sizeof(ptr) );
+		char tmp = allocation;
+		::write(fd, &tmp, sizeof(tmp));
+
+		stack.write(fd);
+	}
 };
 
 struct MemOpBuffer
 {
-    MemOpBuffer() : index( 0 ), fd(-1)
+	struct ScopedLock
 	{
+		ScopedLock(pthread_mutex_t* mutex)
+		: mutex(mutex)
+		{
+			pthread_mutex_lock( mutex );
+		}
+
+		~ScopedLock()
+		{
+			pthread_mutex_unlock( mutex );
+		}
+
+		pthread_mutex_t *mutex;
+	};
+
+	struct RecursiveLock
+	{
+		RecursiveLock(bool &logging)
+		: logging(logging)
+		{
+			logging = true;
+		}
+
+		~RecursiveLock()
+		{
+			logging = false;
+		}
+
+		bool &logging;
+	};
+
+    MemOpBuffer() : index( 0 ), fd(-1), logging(false)
+	{
+		pthread_mutexattr_init(&mutexAttr);
+		pthread_mutexattr_settype(&mutexAttr, PTHREAD_MUTEX_RECURSIVE);
+		pthread_mutex_init(&mutex, &mutexAttr);
+
 		const char* output = getenv("DONBURI_OUTPUTFILE");
 		if ( output )
 		{
@@ -79,113 +132,126 @@ struct MemOpBuffer
 
 			mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 			fd = open(outputFile, O_WRONLY | O_TRUNC | O_CREAT, mode);
-//			std::cout << fd << std::endl;
 		}
 	}
     ~MemOpBuffer()
     {
 		flush();
 		close(fd);
-
-//        for (int i = 0; i < index; ++i)
-//        {
-//            const MemOp &op = ops[i];
-//
-//            if (op.malloc)
-//            {
-//                std::cout << "MALLOC: " <<  std::dec << op.size;
-//                std::cout << " " << std::hex << std::setw(16) << std::setfill('0') <<  op.ptr;
-//                std::cout << std::endl;
-//
-//            }
-//            else
-//            {
-//                std::cout << "FREE ";
-//                std::cout << " " << std::hex << std::setw(16) << std::setfill('0') <<  op.ptr;
-//                std::cout << std::endl;
-//            }
-//
-//            op.stack.print();
-//        }
     }
 
 	void flush()
 	{
-		write(fd, &ops[0], sizeof(MemOp) * index );
+		for (size_t i = 0; i < index; ++i)
+		{
+			ops[i].write( fd );
+		}
+
 		index = 0;
 	}
 
     void allocation(size_t size, void* ptr)
     {
+		ScopedLock l (&mutex);
+		if (logging)
+		{
+			return;
+		}
+		RecursiveLock r(logging);
 
         ops[index].stack.get();
         ops[index].size = size;
-        ops[index].malloc = true;
+        ops[index].allocation = true;
         ops[index].ptr = ptr;
 
 		index++;
 
-		if (index == 1024 * 1024)
+		if (index == maxMemOps)
 		{
 			flush();
 		}
-
-    }
+	}
 
     void free(void* ptr)
     {
+		ScopedLock l (&mutex);
+		if (logging)
+		{
+			return;
+		}
+		RecursiveLock r(logging);
+
         ops[index].stack.get();
         ops[index].size = 0;
-        ops[index].malloc = false;
+        ops[index].allocation = false;
         ops[index].ptr = ptr;
 
         index++;
 
-		if (index == 1024 * 1024)
+		if (index == maxMemOps)
 		{
 			flush();
 		}
+
     }
 
-    int index;
-    MemOp ops[1024 * 1024];
-	char outputFile[1024];
+	pthread_mutex_t mutex;
+	pthread_mutexattr_t mutexAttr;
+
+
+	static const int maxMemOps = 1024 * 256;
+	static const int maxProfileFile = 1024;
+	int index;
+    MemOp ops[maxMemOps];
+	char outputFile[maxProfileFile];
 	int fd;
+	bool logging;
+};
+
+struct MallocFunctions
+{
+	typedef void *(*fn_malloc)(size_t);
+	typedef void *(*fn_free)(void *);
+
+	fn_malloc _malloc;
+	fn_free _free;
+
+	MallocFunctions()
+	{
+		_malloc = (fn_malloc) dlsym(RTLD_NEXT, "malloc");
+		_free = (fn_free) dlsym(RTLD_NEXT,"free");
+	}
 };
 
 MemOpBuffer gMemOpBuffer;
-pthread_mutex_t gMutex;
+MallocFunctions gMallocFunctions;
 
-// 1. lock access to MemOpBuffer [DONE]
-// 2. Serialise to profile file (environment variable for file)
-// 3. Insert marker API
-// 4. generate symbol from address only once
-// 5. guard against re-entry into malloc for a given thread so malloc & free work inside the instrumented malloc
-// 6. Write test case for threading
-// 7. cache address of old malloc & free
+
+// lock access to MemOpBuffer [DONE]
+// Serialise to profile file (environment variable for file) [DONE]
+// guard against re-entry into malloc for a given thread so malloc & free work inside the instrumented malloc [DONE]
+// cache address of old malloc & free only once & not on every call. [DONE]
+// generate symbol from address only once [DONE]
+
+// Insert marker API
+// Write test case for threading
+// split malloc preload from memory logging .cpp files
+// append pid to logging file
+// add a define / variable for memOp buffer size
+// add a define / variable for stack depth
 
 extern "C"
 {
     void *malloc(size_t size)
     {
-        fn_malloc o_malloc;
-        o_malloc = (fn_malloc) dlsym(RTLD_NEXT, "malloc");
-        void* ptr = o_malloc(size);
-
-		pthread_mutex_lock( &gMutex );
+		void* ptr = gMallocFunctions._malloc(size);
         gMemOpBuffer.allocation(size, ptr);
-		pthread_mutex_unlock( &gMutex );
         return ptr;
     }
 
     void free(void *ptr)
     {
-		pthread_mutex_lock( &gMutex );
-        gMemOpBuffer.free(ptr);
-		pthread_mutex_unlock( &gMutex );
-
-        fn_free o_free;
-        o_free = (fn_free) dlsym(RTLD_NEXT,"free");
-        o_free(ptr);
+		gMemOpBuffer.free(ptr);
+		gMallocFunctions._free(ptr);
     }
 }
