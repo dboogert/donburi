@@ -36,13 +36,13 @@ void *malloc(size_t size)
 {
 	void* ptr = getMallocFunctions()._malloc(size);
 
-	GetMemOps().allocation(size, ptr);
+	donburi::GetMemOps().allocation(size, ptr);
 	return ptr;
 }
 
 void free(void *ptr)
 {
-	GetMemOps().free(ptr);
+	donburi::GetMemOps().free(ptr);
 	getMallocFunctions()._free(ptr);
 }
 }

@@ -1,4 +1,6 @@
-add_executable(tool main.cpp imgui_impl_sdl_gl3.cpp
+add_executable(tool main.cpp
+        imgui_impl_sdl_gl3.cpp
+        LogReader.cpp
         imgui-1.53/imgui.cpp
         imgui-1.53/imgui_draw.cpp
         imgui-1.53/imgui_demo.cpp)

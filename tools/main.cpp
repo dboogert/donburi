@@ -1,10 +1,13 @@
 #include "imgui.h"
 
+#include <iostream>
+
 #include <GL/glew.h>
 #include <GL/gl.h>
 
 #include <SDL.h>
 #include "imgui_impl_sdl_gl3.h"
+#include "LogReader.h"
 
 int main(int argc, char** argv)
 {
@@ -27,6 +30,18 @@ int main(int argc, char** argv)
 	SDL_GetCurrentDisplayMode(0, &current);
 	SDL_Window *window = SDL_CreateWindow("donburi - memory profiler", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, SDL_WINDOW_OPENGL|SDL_WINDOW_RESIZABLE);
 	SDL_GLContext glcontext = SDL_GL_CreateContext(window);
+
+	donburi::LogReader reader ("/tmp/123");
+
+	for (size_t i = 0; i < reader.numOps();++i)
+	{
+		donburi::MemOp op = reader.readOp();
+
+		for( auto f : op.stack.frames)
+		{
+			std::cout << reader.getStrings()[f] << std::endl;
+		}
+	}
 
 	glewInit();
 
