@@ -10,6 +10,10 @@ void Stack::get()
 	unw_cursor_t cursor;
 	unw_init_local(&cursor, &context);
 
+	// go up one frame so we don't see the allocation capture function
+	// in the call stack
+	unw_step( &cursor );
+
 	while( unw_step( &cursor ) && f < maxStackDepth)
 	{
 		unw_get_reg( &cursor, UNW_REG_IP, &ip[f] );
@@ -158,14 +162,22 @@ void MemOpBuffer::finalise()
 
 	::write(fd, &numStrings, sizeof(size_t));
 
+	size_t offset = 0;
+	for (size_t i = 0; i < numStrings; ++i)
+	{
+		size_t length = strings[i].length();
+		::write(fd, &offset, sizeof(offset));
+		offset += length;
+	}
+
 	// todo write offsets for all the strings in a table
 	for (size_t i = 0; i < numStrings; ++i)
 	{
 		::write(fd, strings[i].c_str(), strlen(  strings[i].c_str() ));
-		std::cout <<  strings[i] << std::endl;
+		std::cout << "[donburi]		" << i << " - '" << strings[i] << "'" << std::endl;
 	}
 
-	off_t offset = lseek(fd, 4, SEEK_SET);
+	lseek(fd, 4, SEEK_SET);
 	::write(fd, &stringsOffset, sizeof(size_t));
 
 }
